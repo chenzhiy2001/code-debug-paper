@@ -1,6 +1,6 @@
 # code-debug-paper
 
-## 大纲
+[中文草稿](./cn-draft.md)
 [大纲](./outline.md)
 
 ## 素材
