@@ -99,54 +99,13 @@
 
 然而，Debug Adapter与VSCode之间的交互则更为复杂。它们通过调试适配器协议（Debug Adapter Protocol, DAP）交互，该协议由事件（Events）、请求（Requests）和响应（Responds）三个部分组成。当用户在VSCode编辑器中设置新的断点时，VSCode会向Debug Adapter发送一个设置断点的请求（Request）。Debug Adapter中的断点组管理模块首先将断点信息存储在相应的断点组中，然后判断这个断点是否属于当前断点组。如果属于当前断点组，则立即指示GDB设置该断点；如果不属于，则暂时不设置该断点。
 
-这种缓存机制确保GDB不会同时设置内核态和用户态的断点，从而避免了断点设置的冲突。接下来，需要一个机制在适当的时机切换断点组，确保断点在可能被触发之前被GDB设置。显然，利用特权级切换的时机进行断点组切换是理想的选择。
-
-在这样的缓存机制下，GDB 不会同时设置内核态和用户态断点，因此避免了内核态用户态的断点冲突。接下来需要一个机制，在合适的时机进行断点组的切换，保证某个断点在可能被触发之前就令 GDB 设置下去。显然，**利用特权级切换的时机是理想的选择**。因此，我们令Debug Adapter 自动在内核态进入用户态以及用户态返回内核态处，设置断点。我们称这两个断点为**边界断点**。如果边界断点被触发，就意味着特权级发生了切换，进而内存地址空间也会发生切换，因此断点组也应当切换。我们令 Debug Adapter 每次断点被触发时都检测这个断点是否是边界断点。如果是的话，先移除旧断点组中的所有断点，再设置新断点组的断点（图2.4）：
+这种缓存机制确保GDB不会同时设置内核态和用户态的断点，从而避免了内核态用户态断点设置上的冲突。接下来，需要一个机制在适当的时机切换断点组，确保断点在可能被触发之前被GDB设置。显然，利用特权级切换的时机进行断点组切换是理想的选择。因此，我们令Debug Adapter 自动在内核态进入用户态以及用户态返回内核态的代码上设置断点。这两个特定的断点被我们称为边界断点。触发边界断点意味着发生了特权级的切换，随之而来的是内存地址空间的变化，从而需要切换当前激活的断点组。Debug Adapter被设计为能够在任何断点触发时检测该断点是否为边界断点，并据此进行相应的断点组切换。（图2.4）：
 
 ![img](./assets/clip_image001.png)
 
-<div align='center'>图2.4  断点组切换</div>
+图2.4  断点组切换
 
-断点组切换的代码如下：
-
-```typescript
-  protected handleBreakpoint(info: MINode) {
-        if (this.addressSpaces.pathToSpaceName(
-info.outOfBandRecord[0].output[3][1][4][1])
-==='kernel'
-){//如果是内核即将trap入用户态处的断点
-            this.addressSpaces.updateCurrentSpace('kernel');
-            this.sendEvent({ event: "inKernel" } as DebugProtocol.Event);
-            if (info.outOfBandRecord[0].output[3][1][3][1] === "src/trap/mod.rs"
-&& info.outOfBandRecord[0].output[3][1][5][1] === '135') {
-                this.sendEvent({ event: "kernelToUserBorder" }
- as DebugProtocol.Event);//发送event
-            }
-        }
-    }
-```
-
-为了保证相关功能正常运作，断点组切换时，符号表文件也应随着断点组的切换而切换：
-
-```typescript
-//extension.ts   
-else if (message.event === "kernelToUserBorder") {
-    //到达内核态->用户态的边界
-    // removeAllCliBreakpoints();
-    vscode.window.showInformationMessage("will switched to " + userDebugFile + " breakpoints");
-    vscode.debug.activeDebugSession?.customRequest("addDebugFile", {
-        debugFilepath:
-            os.homedir() +
-            "/rCore-Tutorial-v3/user/target/riscv64gc-unknown-none-elf/release/" +
-            userDebugFile,
-    });
-    vscode.debug.activeDebugSession?.customRequest(
-        "updateCurrentSpace",
-        "src/bin/" + userDebugFile + ".rs"
-    );
-```
-
-目前，rCore-Tutorial-v3 的主线版本只支持在单核处理器上运行，因此我们没有做多核处理器的适配工作。不过，从调试工具的角度来讲，多核处理器的适配是比较简单的，只需要根据进程的CPU号进行断点组的细分即可。
+为确保断点组切换功能的顺利运行，断点组切换时，符号表文件也应随着断点组的切换而切换。目前，我们没有做运行在多核处理器上的OS的适配工作。不过，我们估计这项工作是比较简单的，只需要根据进程的CPU号进行断点组的细分即可。
 
 ### 2.4 获取更多调试信息
 
