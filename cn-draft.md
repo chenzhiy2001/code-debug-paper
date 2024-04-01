@@ -139,7 +139,7 @@
 
 扩展伯克利包过滤器（extended Berkeley Packet Filter，简称 eBPF）是一个允许在内核里安全地执行不受信任的用户代码的子系统。它依赖于静态分析来保护内核免受有漏洞的、恶意的代码的破坏， 因此，eBPF程序很适合用于各种复杂的监控，调试场景。
 
-一个eBPF系统主要包含eBPF虚拟机（用于执行eBPF字节码）、kprobe（用于监控内核指令和内核函数），uprobe（用于监控用户程序执行和函数），verifier（用于验证即将执行的eBPF字节码是否安全）。目前，主线版本的 rCore-Tutorial-v3 尚未支持 eBPF，但是在 rCore-Tutorial-Code-2022A ( rCore-Tutorial-v3 的课堂教学版本) 上，已经有了 eBPF 虚拟机模块和kprobe模块，我们将这两个模块移植到了 rCore-Tutorial-v3 上。由于 rCore-Tutorial-v3 上暂时没有成熟可用 uprobe 模块，我们将 [rCore-eBPF项目](https://github.com/hm1229/rCore-ebpf) ( 该项目基于一个早期的，大规模的，代码实现和 rCore-Tutorial-v3 完全不同的 rCore OS，实现了 uprobe 和 kprobe 功能） 中的紧耦合的 uprobe 代码改写成一个独立的模块（Rust Crate）并移植到 rCore-Tutorial-v3 上。由于 rCore-Tutorial-v3 和 rCore 相比，各种功能的实现方式都有很大不同，两个 OS 提供的 API 也不尽相同，甚至，一部分 rCore 的 API 在 rCore-Tutorial-v3 里没有对应的实现，只能我们自己为 rCore-Tutorial-v3 编写。因此，uprobe 模块化和移植的工作量比较大。
+eBPF系统的核心组件包括：eBPF虚拟机（负责执行eBPF字节码）、kprobe（监控内核指令和函数）、uprobe（监控用户程序执行和函数）以及verifier（确保待执行的eBPF字节码的安全性）。目前，主线版本的 rCore-Tutorial-v3 尚未支持 eBPF，但是在 rCore-Tutorial-Code-2022A ( rCore-Tutorial-v3 的课堂教学版本) 上，已经有了 eBPF 虚拟机模块和kprobe模块，我们将这两个模块移植到了 rCore-Tutorial-v3 上。由于 rCore-Tutorial-v3 上暂时没有成熟可用 uprobe 模块，我们将 [rCore-eBPF项目](https://github.com/hm1229/rCore-ebpf) ( 该项目基于一个早期的，大规模的，代码实现和 rCore-Tutorial-v3 完全不同的 rCore OS，实现了 uprobe 和 kprobe 功能） 中的紧耦合的 uprobe 代码改写成一个独立的模块（Rust Crate）并移植到 rCore-Tutorial-v3 上。由于 rCore-Tutorial-v3 和 rCore 相比，各种功能的实现方式都有很大不同，两个 OS 提供的 API 也不尽相同，甚至，一部分 rCore 的 API 在 rCore-Tutorial-v3 里没有对应的实现，只能我们自己为 rCore-Tutorial-v3 编写。因此，uprobe 模块化和移植的工作量比较大。
 
 #### 3.2.2 将eBPF虚拟机、kprobe移植到 rCore-Tutorial-v3
 
@@ -253,7 +253,7 @@ pub extern "C" fn get_new_page(addr: usize, len: usize) -> usize{
 
 在第一种情况下，p1<=p2 ；在第二种情况下，p3<=p0。如果这两个情况都不出现，那么就是重叠了。
 
-但是，这种推理方式的前提是，给定的区间都是左闭右开的，而rCore-Tutorial-v3的内存区间相关的数据结构都是闭区间（文档里没明说，我根据代码和自己的实验猜测的）。因此，与其将闭区间转换成左闭右开（这是之前多次写错的根本原因），不如直接改写成闭区间的写法（即，在第一种情况下，p1<p2 ；在第二种情况下，p3<p0。如果这两个情况都不出现，那么就是重叠了），就不会写错了，而且代码简洁不少。
+但是，这种推理方式的前提是，给定的区间都是左闭右开的，而rCore-Tutorial-v3的内存区间相关的数据结构都是闭区间（文档里没明说，我根据代码和自己的实验猜测的）。因此，与其将闭区间转换成左闭右开（这是之前多次写错的根本原因），不如直接改写成闭区间的写法（即，在第一种情况下，p1<p2 ；在第二种情况下，p3 < p0。如果这两个情况都不出现，那么就是重叠了），就不会写错了，而且代码简洁不少。
 
 ###### 3.2.3.2.2 set_writeable 函数的实现
 
