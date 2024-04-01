@@ -74,56 +74,32 @@
 
 ![img](./assets/clip_image002.png)
 
-<div align='center'>图2.1 基于Debug Adapter的调试架构</div>
+图2.1 基于Debug Adapter的调试架构
 
 在研究了调试适配器协议和GDB的 GDB/MI 接口后，我们认为，通过设计一个能够通过GDB/MI接口控制GDB，同时通过DAP与VSCode调试界面交互的调试适配器，不仅可以实现“断点组切换”功能，而且，相对于直接修改GDB，可以提高代码的抽象级别，使得后续功能的实现（包括对用户界面的扩展，对eBPF的支持等）变得更为高效。基于此方案，我们在Debug Adapter中实现了“断点组切换”。
 
 ### 2.3 解决内核态用户态的 GDB 断点冲突
 
-前面已经讲到，要实现操作系统调试功能的关键问题在于同时设置内核态、用户态的断点，但是我们在 rCore-Tutorial-v3 操作系统上实际测试后发现，用户态、内核态的断点设置是冲突的。这是由于 GDB 根据内存地址设置断点，因此是依赖于页表、快表的，但是 rCore-Tutorial-v3 从内核态切换到用户态时执行了 risc-v 处理器的`sfence.vma`等指令，使得 TLB 刷新成用户进程的页表。所以，如果在 rCore-Tutorial-v3 操作系统运行在内核态时，令 GDB 设置用户态程序的断点，这个用户态的断点无法被触发。
+正如先前章节所述，实现操作系统调试的关键挑战之一是能够同时设置内核态和用户态的断点。在对 rCore-Tutorial-v3 操作系统进行实际测试时，我们发现内核态和用户态的断点设置存在冲突。该问题源自于GDB依赖内存地址来设置断点，而这一机制依赖于页表和快表。当rCore-Tutorial-v3从内核态切换到用户态时，通过执行risc-v处理器的 sfence.vma 指令，使得 TLB 刷新成用户进程的页表。所以，如果在 rCore-Tutorial-v3 操作系统运行在内核态时，令 GDB 设置用户态程序的断点，这个用户态的断点无法被触发。
 
-解决这个问题的核心思路是，缓存设置后会造成异常情况的断点，待时机合适再令 GDB 设置这些断点。在用户态运行时，缓存内核态断点；在内核态运行时，缓存用户态断点。为此，我们在 Debug Adapter 中新增了一个断点组管理模块。
+为解决此问题，我们采取的策略是缓存那些设置后可能引起异常的断点，并在适当时机由GDB重新设置这些断点。具体而言，当系统运行在用户态时，我们缓存内核态的断点；而在内核态运行时，则缓存用户态的断点。这一策略通过在Debug Adapter中引入一个新的断点组管理模块来实现。
 
-断点组管理模块用一个词典缓存了用户要求设置的（包括内核态和用户态）所有断点。词典中某个元素的键是内存地址空间的代号，元素的值是这个代号对应的断点组，即这个内存地址空间里的所有断点。当任何一个断点被触发时，Debug Adapter 都会检测当前触发的这个断点属于哪个断点组。我们将这些包含了最新触发断点的断点组称为当前断点组（Current Breakpoint Group）。
+该断点组管理模块使用一个词典来缓存用户设置的所有断点（包括内核态和用户态的断点）。词典中的每一个条目以内存地址空间的代号为键，对应的断点组为值。当任何一个断点被触发时，Debug Adapter会检查该断点属于哪个断点组，并将其识别为当前断点组（Current Breakpoint Group）。
 
 ![img](./assets/clip_image002-1692019639150-4.png)
 
-<div align='center'>图2.2  断点组</div>
+图2.2  断点组
 
-如上一节所述，我们通过 Debug Adapter 来实现这个机制。Debug Adapter 和 GDB 的交互比较简单，我们只要实现以下四个功能即可：
+我们通过Debug Adapter实现上述机制。Debug Adapter与GDB之间的交互相对简单，主要包括：
 
 1. Debug Adapter 通过向 GDB 发送 `set-breakpoint` 设置一个断点，GDB 返回断点设置的结果。
 2. Debug Adapter 通过向 GDB 发送 `add-symbol-file` 添加符号表，GDB 返回符号表添加的结果。
 3. Debug Adapter 通过向 GDB 发送 `remove-breakpoint` 去除一个断点，GDB 返回断点去除的结果。
 4. Debug Adapter 通过向 GDB 发送 `remove-symbol-file` 去除符号表，GDB 返回去除的结果。
 
-然而，Debug Adaper 和 VSCode 的交互略显复杂。Debug Adapter 和 VSCode 用调试适配器协议进行交互，该协议主要由以下三个部分组成：
+然而，Debug Adapter与VSCode之间的交互则更为复杂。它们通过调试适配器协议（Debug Adapter Protocol, DAP）交互，该协议由事件（Events）、请求（Requests）和响应（Responds）三个部分组成。当用户在VSCode编辑器中设置新的断点时，VSCode会向Debug Adapter发送一个设置断点的请求（Request）。Debug Adapter中的断点组管理模块首先将断点信息存储在相应的断点组中，然后判断这个断点是否属于当前断点组。如果属于当前断点组，则立即指示GDB设置该断点；如果不属于，则暂时不设置该断点。
 
-1. Events 定义了调试过程中可能发生的事件；
-2. Requests 定义了VSCode等调试器UI对Debug Adapter的请求；
-3. Responds 定义了Debug Adapter对请求的回应。
-
-当用户在 VSCode 编辑器中设置新断点时，VSCode 会向Debug Adapter 发送一个请求设置断点的 Request：
-
-```typescript
-   onDidSendMessage: (message) => {
-        if (message.command === "setBreakpoints"){
-//如果Debug Adapter设置了一个断点
-            vscode.debug.activeDebugSession?.customRequest("update");
-        }
-        if (message.type === "event") {
-            //如果（因为断点等）停下
-            if (message.event === "stopped") {
-                //更新寄存器和断点信息
-                vscode.debug.activeDebugSession?.customRequest("update");  
-            }
-```
-
-Debug Adapter 中的断点组管理模块会先将这个断点的信息存储在对应的断点组中，然后判断这个断点所在的断点组是不是当前断点组，如果是的话，就令 GDB 当即设置这个断点。反之，如果不是，那么这个断点暂时不会令 GDB 设置（由于API名比较冗长，为了不占用过多篇幅，我们用截图来展示这份关键代码）：
-
-![img](./assets/clip_image002-1692020735435-6.png)
-
-<div align='center'>图2.3  断点组缓存代码</div>
+这种缓存机制确保GDB不会同时设置内核态和用户态的断点，从而避免了断点设置的冲突。接下来，需要一个机制在适当的时机切换断点组，确保断点在可能被触发之前被GDB设置。显然，利用特权级切换的时机进行断点组切换是理想的选择。
 
 在这样的缓存机制下，GDB 不会同时设置内核态和用户态断点，因此避免了内核态用户态的断点冲突。接下来需要一个机制，在合适的时机进行断点组的切换，保证某个断点在可能被触发之前就令 GDB 设置下去。显然，**利用特权级切换的时机是理想的选择**。因此，我们令Debug Adapter 自动在内核态进入用户态以及用户态返回内核态处，设置断点。我们称这两个断点为**边界断点**。如果边界断点被触发，就意味着特权级发生了切换，进而内存地址空间也会发生切换，因此断点组也应当切换。我们令 Debug Adapter 每次断点被触发时都检测这个断点是否是边界断点。如果是的话，先移除旧断点组中的所有断点，再设置新断点组的断点（图2.4）：
 
