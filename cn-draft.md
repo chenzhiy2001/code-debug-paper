@@ -157,7 +157,7 @@ eBPF系统的核心组件包括：eBPF虚拟机（负责执行eBPF字节码）�
 
 ##### 3.2.2.2 外部插件实现
 
-上述的在内核中搜索嵌入的符号表的方法可移植性强，但由于查找符号表时操作系统停止运行，效率较低。因此我们进一步实现外部符号解析，提升Kprobe运行效率。我们的做法是，将符号解析功能转移到了 VSCode 插件来实现。当用户需要在某个符号插桩时，VSCode插件调用宿主机的`nm`，`grep`等Linux命令将符号转换为地址，然后将地址传送给被调试的操作系统的eBPF模块。
+上述的在内核中搜索嵌入的符号表的方法可移植性强，但由于查找符号表时操作系统停止运行，效率较低。因此我们进一步实现外部符号解析，提升Kprobe运行效率。我们的做法是，将符号解析功能转移到了 VSCode 插件来实现。当用户需要在某个符号插桩时，VSCode插件调用宿主机的`nm`，`grep`等 Linux 命令将符号转换为地址，然后将地址传送给被调试的操作系统的eBPF模块。
 
 #### 3.2.3 uprobe 的模块化和移植工作
 
@@ -165,7 +165,7 @@ eBPF系统的核心组件包括：eBPF虚拟机（负责执行eBPF字节码）�
 
 在考虑向 rCore-Tutorial-v3 上移植 uprobe 时，我们意识到应该先进行 uprobe 的模块化工作，再将模块化的 uprobe 移植到 rCore-Tutorial-v3。这样，未来如果想基于eBPF技术调试其他的OS，且这个OS里没有uprobe的话，再次移植的工作量会小很多。
 
-和 kprobe 相比，uprobe 模块化的难点在于 uprobe 会调用和操作系统紧密相关的内核函数，进行进程控制块的读取、页表操作等。对此，我们的解决方案是，将这些和 OS 紧密相关的代码抽象成三个函数，uprobe模块内会调用这三个函数，但是uprobe模块内只有这三个函数的函数签名，而这三个函数的具体代码实现交给内核（通过运用 rust的 `extern C`语法）。这三个函数是：
+和 kprobe 相比，uprobe 模块化的难点在于 uprobe 会调用和具体操作系统高度耦合的内核函数，进行进程控制块的读取、页表操作等。对此，我们的解决方案是，将这些和操作系统紧密相关的代码抽象成三个函数，uprobe模块内会调用这三个函数，但是uprobe模块内只有这三个函数的函数签名，而这三个函数的具体代码实现交给内核（通过运用 rust的 `extern C`语法）。这三个函数是：
 
 1. `get_exec_path` ：读取进程控制块中的进程名；
 2. `get_new_page`：获取一个新的页，用于存储 trap frame；
@@ -173,7 +173,7 @@ eBPF系统的核心组件包括：eBPF虚拟机（负责执行eBPF字节码）�
 
 在 3.2.3.2 节，我们会详细介绍这三个内核函数的实现。
 
-除此之外，我们还需要将一些 rCore 专属的数据结构和不通用的内存读写方式进行抽象，改为比较通用的数据结构和可调整的内存读写方式。
+除此之外，我们还需要将一些 rCore (rCore-Tutorial-v3是rCore的完全重写版本，二者的代码基本没有共同之处) 专属的数据结构和不通用的内存读写方式进行抽象，改为比较通用的数据结构和可调整的内存读写方式。
 
 首先，我们发现 rCore-Tutorial-v3 用的 trap-frame 模块和 uprobe 模块用的 trap-frame 版本是不同的，在将版本统一之后，又发现 rCore trap-frame 模块没有保存我们需要的所有寄存器信息，会导致这个 uprobe 模块无法兼容 rCore-Tutorial-v3 上已有的eBPF、kprobe模块。为此，我们基于 rCore-Tutorial-v3 的代码，抽象出了一个比较完整的 [trap_context_riscv](https://github.com/chenzhiy2001/trap_context_riscv) crate，不论是uprobe模块还是 OS 里的 eBPF、kprobe 模块，都统一使用这个完整的 trap-frame 实现，从而解决了这个问题。
 
@@ -425,7 +425,7 @@ pub extern "C" fn get_exec_path() -> alloc::string::String{
 
 ![图示  描述已自动生成](./assets/clip_image002-1692022788591-9.png)
 
-<div align='center'>图3.1  eBPF工作流程</div>
+图3.1  eBPF工作流程
 
 可以看出，收集到的数据是存储在 OS 内部的，而我们则希望将收集到的信息通过GDB，Debug Adapter，最后传送到 VSCode 的调试界面里。如何将存储在OS中的调试信息传送出来？如果和其他内核模块、用户程序的输出一样，直接在终端打印出来，那么这个输出的过程可能会干扰到OS的正常运行，特别是，如果用户想跟踪的代码就是输出函数本身，那么 eBPF 模块在输出了调试信息之后，由于输出过程中调用了输出函数，又会再次激活 eBPF 的代码跟踪，信息收集流程，陷入死循环。这类情况是我们不希望出现的。
 
@@ -439,21 +439,21 @@ pub extern "C" fn get_exec_path() -> alloc::string::String{
 
 ![img](./assets/clip_image002-1692066502676-16.png)
 
-<div align='center'>图3.2  修改头文件，添加新串口的枚举名和中断号</div>
+图3.2  修改头文件，添加新串口的枚举名和中断号
 
 ![img](./assets/clip_image004.png)
 
-<div align='center'>图3.3  为新串口分配 MMIO 地址</div>
+图3.3  为新串口分配 MMIO 地址
 
 ![图形用户界面, 文本, 应用程序, 电子邮件  描述已自动生成](./assets/clip_image006.png)
 
-<div align='center'>图3.4  新串口初始化</div>
+图3.4  新串口初始化
 
 还修改了设备树初始化函数：
 
 ![img](./assets/clip_image008.png)
 
-<div align='center'>图3.5  设备树初始化函数</div>
+图3.5  设备树初始化函数
 
 我们发现运行在修改后的 Qemu 中的 rCore-Tutorial-v3 操作系统可以给第二个串口发送消息，但不能接收基于中断机制的消息。这是因为在 RISC-V 中，存在用于保护物理地址的寄存器 pmpcfg 和 pmpaddr [6]。而 rCore-Tutorial-v3 的 SBI（rustsbi-qemu）通过设置这两个寄存器的值，使得只有 SBI 部分和 OS 所在的地址空间可以使用，而PLIC、串口等设备所在的物理地址不可以使用。为了调试方便，我们修改了SBI对 pmpcfg 和 pmpaddr 的设置，使得所有物理地址都可以被使用：
 
@@ -508,7 +508,7 @@ fn set_pmp(_board_info: &BoardInfo) {
 
 我们把会改变操作系统状态的那个跟踪技术（Qemu 的 gdbserver 或 OpenOCD ）称为 main-stub，eBPF 的 gdbserver 称为 side-stub。Main-stub 具有可以改变操作系统运行状态的控制能力，而 side-stub 只负责收集信息，不影响内核的状态。下表详细展示了 main-stub 和 side-stub 功能与局限，可以看出，二者形成了很好的互补：
 
-<div align='center'>表3.1  eBPF Server 和 gdbserver 对比</div>
+表3.1  eBPF Server 和 gdbserver 对比
 
 |                          | eBPF Daemon 的 gdbserver                                     | Qemu 的 gdbserver                                            |
 | :----------------------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
@@ -546,7 +546,7 @@ RSP协议规定的基本消息单位是由ASCII字符组成的数据包（Packet
 
 ![img](./assets/clip_image002-1692096012304-24.png)
 
-<div align='center'>图3.6  RSP协议的数据包格式</div>
+图3.6  RSP协议的数据包格式
 
 其中，“$”用于标识数据包的开头，packet-data是传送的实际数据，checksum（即校验值）是“$”和“#”之间所有字符的模 256 和，它是八位无符号整数，编码成ASCII字符后一定占用两个字符，所以“checksum”这三个字符标示了一个数据包的结束。通信的双方在接收到数据包后，可以发送单个“+”字符表示数据包接收成功，或发送"-"表示数据包接收失败，要求重发。
 
@@ -554,7 +554,7 @@ RSP协议规定的基本消息单位是由ASCII字符组成的数据包（Packet
 
 ![图形用户界面, 文本, 应用程序  描述已自动生成](./assets/clip_image002-1692096025358-26.png)
 
-<div align='center'>图3.7  RSP协议的通知数据包格式</div>
+图3.7  RSP协议的通知数据包格式
 
 这套协议比较简明，且能满足我们的需求，因此，我们在GDB中增加一个子模块，让这个子模块使用 RSP 协议和 side-stub 进行通信。考虑到这个子模块将会有一个持续从串口接收字节流的线程，且有很多字符串处理流程，我们选择用 python 语言来编写这个模块，因为用 python 语言创建和管理线程比较简单，且已经有功能强大的 pyserial 库能够便捷地处理串口消息的收发。
 
@@ -564,7 +564,7 @@ RSP协议规定的基本消息单位是由ASCII字符组成的数据包（Packet
 
 ![表格  描述已自动生成](./assets/clip_image002-1692096036127-28.png)
 
-<div align='center'>图3.8  传输同步数据包的消息流被异步的通知数据包打断</div>
+图3.8  传输同步数据包的消息流被异步的通知数据包打断
 
 由于多个 eBPF 程序不会并发运行，因此异步消息流之间是按顺序发送的，不会互相重叠；运行 eBPF 程序时，操作系统其他部分是不运行的，操作系统中负责收发同步消息的用户态进程也不运行，直到 eBPF 程序发送完了异步消息后，这个用户态进程才会继续运行，继续同步消息的发送，这种机制可以确保异步消息不会被同步消息打断。
 
@@ -653,7 +653,7 @@ GDB 允许在不修改源代码的情况下支持 python 语言编写的扩展�
 
 ![2.1](./assets/2.1.png)
 
-<div align='center'>图4.1  调试工具的整体架构设计</div>
+图4.1  调试工具的整体架构设计
 
 在图4.1中，源代码指待编译的操作系统的源代码，当用户发出编译请求时，服务器中的 rust 工具链会通过特定的编译参数编译操作系统源代码，产生满足操作系统调试要求的操作系统镜像和调试信息文件。如果用户接下来发出调试请求，服务器中的 Qemu 或服务器连接的 FPGA 硬件就会加载操作系统镜像（本项目以 Qemu 为例），服务器中的 GDB 会加载调试信息文件并连接至 Qemu 的 gdbserver。
 
@@ -691,7 +691,7 @@ GDB 与 gdbserver、eBPF server 通过 GDB 远程串行协议 (RSP) [5]进行通
 
 ![图示  描述已自动生成](./assets/clip_image001-1692099882470-60.png)
 
-<div align='center'>图4.2 Debug Adapter 和GDB、Extension Frontend的通信机制</div>
+图4.2 Debug Adapter 和GDB、Extension Frontend的通信机制
 
 #### 4.3.4 实际硬件的支持（部分完成）
 
@@ -707,11 +707,11 @@ GDB 与 gdbserver、eBPF server 通过 GDB 远程串行协议 (RSP) [5]进行通
 
 ![fuckms](./assets/fuckms.png)
 
-<div align='center'>图4.3 Extension Frontend和其他模块的信息传递链路</div>
+图4.3 Extension Frontend和其他模块的信息传递链路
 
 不同类型的数据的更新策略是不一样的，具体见下表：
 
-<div align='center'>表4.1  不同类型数据的更新策略</div>
+表4.1  不同类型数据的更新策略
 
 |名称|功能|更新策略|
 |:----|:----|:----|
@@ -723,23 +723,23 @@ VSCode在近期的更新中，添加了一些新的API，提供了原生debugger
 
 ![图示  描述已自动生成](./assets/clip_image002-1692100316810-69.png)
 
-<div align='center'>图4.4  基于新API的架构</div>
+图4.4  基于新API的架构
 
 在这个新的架构中，我们通过VSCode 提供的几个重要的原生 request 接口来展示数据。比如 variablesRequest，其功能是在在线IDE窗口左侧的 debugger 标签页中，顶部VARIABLES 标签栏里展示变量的名字与值。每当代码调试因触发断点等原因发生了暂停，在线 IDE 都会自动发送一个 variablesRequest 向 Debug Adapter 请求变量数据。我们添加了一个自定义的 variablesRequest获取到寄存器数据，从而在更贴近原生界面的 TreeView 里展示寄存器数据。（图4.5）
 
 ![img](./assets/clip_image002-1692100360191-71.png)
 
-<div align='center'>图4.5  通过TreeView展示数据</div>
+图4.5  通过TreeView展示数据
 
 WebView除了展示数据外，还提供了一些命令按钮。我们利用新API将这些WebView中的命令按钮改为原生按钮，放置到编辑器的上方，和原生界面融为一体，如下图所示：
 
 ![img](./assets/clip_image002-1692100400255-73.png)
 
-<div align='center'>图4.6  原生样式的命令按钮</div>
+图4.6  原生样式的命令按钮
 
 其中按钮的功能如下表所示：
 
-<div align='center'>表4.2  调试界面按钮的名称及功能</div>
+表4.2  调试界面按钮的名称及功能
 
 |名称|功能|
 |:----|:----|
@@ -754,13 +754,13 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![img](./assets/clip_image002-1692100450042-75.png)
 
-<div align='center'>图4.7  调试功能按钮</div>
+图4.7  调试功能按钮
 
 此外，我们也为 eBPF 调试功能量身打造了一个用户界面，用户只需要用鼠标点击，即可进行串口连接，符号转地址，注册kprobe/uprobe等调试操作：
 
 ![oslab-2023-08-14-15-37-16](./assets/oslab-2023-08-14-15-37-16.png)
 
-<div align='center'>图4.8 eBPF调试界面</div>
+图4.8 eBPF调试界面
 
 ## 5 应用实例
 
@@ -778,7 +778,7 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![图形用户界面, 文本  中度可信度描述已自动生成](./assets/clip_image002.jpg)
 
-<div align='center'>图5.1  更新特权级后的调试器界面。在右侧窗口的上方，可以发现此时操作系统处于内核态</div>
+图5.1  更新特权级后的调试器界面。在右侧窗口的上方，可以发现此时操作系统处于内核态
 
 ### 5.2 内核态与用户态间方便的切换跟踪
 
@@ -786,7 +786,7 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![文本  低可信度描述已自动生成](./assets/clip_image002-1692096069934-31.png)
 
-<div align='center'>图5.2 launch.json配置文件</div>
+图5.2 launch.json配置文件
 
 配置launch.json并保存后，按F5键，即可启动调试进程。
 
@@ -794,7 +794,7 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![img](./assets/clip_image002-1692096099194-33.png)
 
-<div align='center'>图5.3  清除所有断点。右下角的通知显示清除成功</div>
+图5.3  清除所有断点。右下角的通知显示清除成功
 
 其次，设置内核入口（setKernelInBreakpoints按钮）、出口断点（setKernelOutBreakpoints按钮）。
 
@@ -802,27 +802,27 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![img](./assets/clip_image002-1692096117870-35.png)
 
-<div align='center'>图5.4  设置内核代码断点</div>
+图5.4  设置内核代码断点
 
 ![img](./assets/clip_image002-1692096132396-37.png)
 
-<div align='center'>图5.5  设置用户程序代码的断点。右下角的通知显示，这个断点被缓存到了断点组中</div>
+图5.5  设置用户程序代码的断点。右下角的通知显示，这个断点被缓存到了断点组中
 
 断点设置完毕后，按continue按钮开始运行rCore-Tutorial。当运行到位于内核出口的断点时，插件会自动切换到用户态的断点：
 
 ![img](./assets/clip_image002-1692096143581-39.png)
 
-<div align='center'>图5.6  边界断点触发，右下角的通知显示插件自动进行了断点组切换</div>
+图5.6  边界断点触发，右下角的通知显示插件自动进行了断点组切换
 
 ![img](./assets/clip_image002-1692096153977-41.png)
 
-<div align='center'>图5.7  触发用户态程序的断点</div>
+图5.7  触发用户态程序的断点
 
 在用户态程序中如果想观察内核内的执行流，可以点击gotokernel按钮，然后点击继续按钮，程序会停在内核的入口断点，这时，可以先把内核出口断点设置好（点击setKernelOutBreakpoints按钮），接下来，可以在内核态设置断点，点击继续，即可触发内核断点：
 
 ![img](./assets/clip_image002-1692096162241-43.png)
 
-<div align='center'>图5.8  回到内核，再次触发内核断点</div>
+图5.8  回到内核，再次触发内核断点
 
 如果运行到内核的出口断点，又会回到用户态。
 
@@ -841,7 +841,7 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 
 ![表格  描述已自动生成](./assets/clip_image002-1692096180463-45.jpg)
 
-<div align='center'>图5.9  RISC-V函数调用规范</div>
+图5.9  RISC-V函数调用规范
 
 因此，若要获取系统调用的参数，我们只需要编写一个能获取寄存器信息的 eBPF 程序，并在需要跟踪的系统调用对应的内核函数上插桩即可。
 
@@ -900,21 +900,21 @@ int bpf_prog(struct kprobe_bpf_ctx *ctx) {
 
 ![img](./assets/clip_image002-1692096194330-47.png)
 
-<div align='center'>图5.10  开始调试，启动gdbserver</div>
+图5.10  开始调试，启动gdbserver
 
 ![img](./assets/clip_image002-1692096202518-49.png)
 
-<div align='center'>图5.11  设置断点，从下方终端可以看到Qemu虚拟机已经启动</div>
+图5.11  设置断点，从下方终端可以看到Qemu虚拟机已经启动
 
 ![img](./assets/clip_image002-1692096211205-51.png)
 
-<div align='center'>图5.12  位于第58行的main-stub的断点触发</div>
+图5.12  位于第58行的main-stub的断点触发
 
 在设置完main-stub的断点后，我们按“continue”启动虚拟机。启动之后，在终端中打开 eBPF Server，此时 eBPF Server 可以通过串口和 GDB 中对应的子模块通信：
 
 ![img](./assets/clip_image002-1692096218895-53.png)
 
-<div align='center'>图5.13  在终端中打开eBPF Server。可以看到eBPF Server正在从串口接收消息</div>
+图5.13  在终端中打开eBPF Server。可以看到eBPF Server正在从串口接收消息
 
 我们让GDB 中对应的子模块连接到 eBPF Server。在调试控制台中输入下列命令启用GDB中的eBPF子模块：
 
@@ -941,11 +941,11 @@ so ~/rCore-Tutorial-v3-eBPF/rCore-Tutorial-v3/side-stub.py
 
 ![img](./assets/clip_image002-1692096232116-55.png)
 
-<div align='center'>图5.14  操作系统输出eBPF相关的日志，表示我们跟踪的内核函数被触发</div>
+图5.14  操作系统输出eBPF相关的日志，表示我们跟踪的内核函数被触发
 
 ![img](./assets/clip_image002-1692096250101-57.png)
 
-<div align='center'>图5.15  寄存器数据以高亮字体输出</div>
+图5.15  寄存器数据以高亮字体输出
 
 ### 5.4 Http服务器漏洞修复
 
@@ -957,13 +957,13 @@ so ~/rCore-Tutorial-v3-eBPF/rCore-Tutorial-v3/side-stub.py
 
 ![img](./assets/browser_simplehttp_multiple_tab_bug-1692092365346-18.png)
 
-<div align='center'>图5.16 tcp_simplehttp服务器程序未返回所有请求的网页</div>
+图5.16 tcp_simplehttp服务器程序未返回所有请求的网页
 
 作为对比，我们用同样的方式重复打开全国大学生计算机系统能力大赛的官网，结果是所有标签页都正常地打开了：
 
 ![操作系统比赛官网可以返回所有网页请求](./assets/browser_os_multiple_tab-1692092379372-21.png)
 
-<div align='center'>图5.17 全国大学生计算机系统能力大赛的官网成功返回所有请求的网页
+图5.17 全国大学生计算机系统能力大赛的官网成功返回所有请求的网页
 
 接下来，我们尝试在操作系统调试器的帮助下找到出错的原因并修复这个错误。
 
@@ -1005,85 +1005,25 @@ so ~/rCore-Tutorial-v3-eBPF/rCore-Tutorial-v3/side-stub.py
 
 ![image-20230820032738370](./assets/image-20230820032738370.png)
 
-<div align='center'>图5.18 eBPF检查点触发，弹出调试信息</div>
+图5.18 eBPF检查点触发，弹出调试信息
 
 于是，我们又怀疑，原因可能是我们过于频繁地访问网页，而这个服务器程序在处理过于频繁的请求时会出错。为了验证这个猜想，我们在`sys_accept`、`write`函数设置GDB断点，这样每次处理accept时OS都会停下来，减缓了服务器程序的处理速度。然而，同样的异常现象（六个网页只打开四个）还是出现。
 
 ![image-20230820031615549](./assets/image-20230820031615549.png)
 
-<div align='center'>图5.19 `write`函数的GDB断点触发</div>
+图5.19 `write`函数的GDB断点触发
 
 我们又想到，如果流程是正确的，就需要考虑发送的内容是否有错误。于是，我们检查了服务器返回信息的函数，终于发现了出错的原因：在服务器发送的http response中，`Connection:Close`中的字母t被遗漏了，变成了`Connecion:Close`，导致前一个连接没有被正确关闭，所以后一个连接无法成功建立。
 
 ![image-20230820032133072](./assets/image-20230820032133072.png)
 
-<div align='center'>图5.20 出错的代码</div>
+图5.20 出错的代码
 
 这样，结合 eBPF 和 GDB 两种调试手段，我们根据调试器提供的线索快速定位并修复了这个bug。除了这一处代码，在整个Debug的过程中，我们不需要出于调试目的而改动任何其他的源代码。
 
 ## 致谢
 
-感谢团队成员（陈志扬，向驹韬）之间的相互鼓励和支持，感谢指导老师（吴竞邦老师，赵霞老师）不辞劳苦对本项目的引导！
-
 ## 参考文献
-
-[1] Hongfei Fan,Kun Li,Xiangzhen Li,Tianyou Song,Wenzhe Zhang,Yang Shi,Bowen Du. CoVSCode: A Novel Real-Time Collaborative Programming Environment for Lightweight IDE[J]. Applied Sciences,2019,9(21).
-
-[2]张磊,麦先根,田丹等. 基于QEMU的仿真软件多核系统级调试的方法[P]. 陕西省：CN115658227A,2023-01-31.
-
-[3]孙卫真,刘雪松,朱威浦等.基于RISC-V的计算机系统综合实验设计[J].计算机工程与设计,2021,42(04):1159-1165.DOI:10.16208/j.issn1000-7024.2021.04.037.
-
-[4]张兴华,蒋应俊.DWARF调试信息解析方法研究[J].电子技术与软件工程,2015,No.55(05):254-255.
-
-[5]于佳佳. 基于QEMU的龙芯3A处理器数字化设计与实现[D].电子科技大学,2018.
-
-[6]焦芃源,李涵,李翔宇等.一款安全RISC-V处理器特权模式和内存保护测试[J].北京信息科技大学学报(自然科学版),2021,36(03):82-87.DOI:10.16508/j.cnki.11-5866/n.2021.03.014.
-
-[7]贾金成,朱家鑫,唐震等.映射字典导向的64位ARM到RISC-V汇编翻译[J/OL].小型微型计算机系统:1-8[2023-05-23].<http://kns.cnki.net/kcms/detail/21.1106.TP.20230518.1124.004.html>.
-
-[8]陈志扬.ruprobes模块[EB/OL].[2023-08-10](2023-08-13). [https://github.com/chenzhiy2001/ruprobes.](https://github.com/chenzhiy2001/ruprobes.)
-
-## 系统调用跟踪
-
-### 利用GDB进行syscall跟踪的传统方法
-
-### 利用VSCode进行自动化的系统调用跟踪
-
-#### VSCode提供的自动化API
-
-#### 特权级切换时自动进行单步
-
-#### 断点组切换
-
-### 展望 - 怎么通过软硬件结合的方法跟踪异常
-
-这个事情是朱毅在泉城的时候跟我说的。他意思是说
-
-## eBPF增强跟踪能力
-
-### 什么是eBPF（eBPF不影响OS的运行状态）用eBPF的好处（更加灵活，缓解编译器调试信息不全带来的种种困扰。GDB就像x光，eBPF就像肠镜）
-
-### 我们用eBPF进行调试的思路（插桩-运行eBPF收集信息-利用串口输出信息）
-
-### 以rCore-Tutorial-v3为例，怎么实现这种跟踪能力
-
-#### 给rCore-Tutorial-v3添加eBPF
-
-##### 模块化了别人的库
-
-##### OS本身的修改
-
-#### 传输调试信息
-
-##### 怎么添加串口输入输出的功能
-
-##### GDB怎么同时把两种调试信息处理清楚
-
-## 一个实际的debug例子，用文本的GDB很难弄清楚，但是用调试器就能快速搞定的
-
-## 致谢
-
-## 引用
 
 [1] 前年发的那篇小论文
 [2] ArceOS的链接
