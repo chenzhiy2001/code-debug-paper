@@ -22,20 +22,6 @@
 
 在去年的论文的工作[1]中，我们已经成功实现了内核与0号用户进程的联合断点调试，而且在今年的进一步工作中，实现了内核态与不同用户进程的联合断点调试，并完善了特权级切换功能。除此之外，本研究在基于eBPF的内核态，用户态代码的动态跟踪调试方面也取得了基本的实现，同时，尽管对实际硬件支持的工作尚未全面完成，但已能完整支持基于QEMU的开发环境。此外，我们基于本工作实现的调试工具完成了一个简易的HTTP服务器程序的调试，并成功定位到该程序出错的地方。
 
-本工作涉及到多个代码仓库，列表如下：
-
-| 仓库名                    | 仓库描述                                                     | Github 地址                                                 | commit数量（2022年8月至今）                   |
-| ------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- | --------------------------------------------- |
-| code-debug                | 本仓库                                                       | <https://github.com/chenzhiy2001/code-debug>                | 124                                           |
-| ruprobes                  | 我们移植的uprobe模块和详细的移植文档                         | <https://github.com/chenzhiy2001/ruprobes>                  | 5                                             |
-| rcore-ebpf(全小写)        | 整合了ebpf,kprobe,uprobe模块的rCore-Tutorial-v3              | <https://github.com/chenzhiy2001/rcore-ebpf>                | 8                                             |
-| uCore-Tutorial-Test-2022A | rcore-ebpf的C程序支持                                        | <https://github.com/chenzhiy2001/uCore-Tutorial-Test-2022A> | 2                                             |
-| trap_context_riscv        | trap_context crate （用于uprobe移植）                        | <https://github.com/chenzhiy2001/trap_context_riscv>        | 5                                             |
-| rCore-Tutorial-v3         | 修改版rCore-Tutorial-v3，主要包括多个实验分支的调试器部分功能适配，以及main分支的调试器全功能适配 | <https://github.com/chenzhiy2001/rCore-Tutorial-v3>         | 2                                             |
-| qemu-system-riscv64       | 修改版的Qemu虚拟机                                           | <https://github.com/chenzhiy2001/qemu-system-riscv64>       | 1（关于我们对Qemu做的修改，可以看3.3.2节）    |
-| rustsbi-qemu              | 修改版的RustSBI                                              | <https://github.com/chenzhiy2001/rustsbi-qemu>              | 1（关于我们对RustSBI做的修改，可以看3.3.2节） |
-| code-debug-doc            | 旧文档仓库，记录了6月之前的工作                              | <https://github.com/chenzhiy2001/code-debug-doc>            | 13                                            |
-
 ### 1.2 工作内容概要
 
 我们的工作主要解决了 Rust 操作系统的跨特权级调试跟踪，和静态动态调试相结合的问题。在解决这些问题的过程中，我们主要实现了以下几个技术：
@@ -183,231 +169,15 @@ eBPF系统的核心组件包括：eBPF虚拟机（负责执行eBPF字节码）�
 
 在做了上一章所述的改动之后，我们完成了一个能通过编译的 uprobe 模块。接下来，我们进入到下一阶段，将 uprobe 模块移植到 rCore-Tutorial-v3。
 
-###### 3.2.3.2.1 get_new_page 函数的实现
+在实现上述三个函数时，困难的地方在于 rCore-Tutorial-v3 是以页区间为单位管理内存的，而 rCore-eBPF 项目是以地址区间为单位管理内存的，而且rCore-Tutorial-v3的内存管理是左闭右闭的，而rCore则是左闭右开的。所以我们要将以地址区间为单位的内存管理代码转换为以页区间为单位的内存管理代码，将左闭右闭转换为左闭右开。这三个函数调用了内核里的一些函数。同样地，这些函数在 rCore-eBPF 项目中是OS代码提供的现成API，但是在rCore-Tutorial-v3中，需要我们自己实现。
 
-get_new_page 函数的作用是获取一个新的页，提供给uprobe模块进行trapframe的读取。这个函数的代码如下，主要的流程是：先获取当前进程（在rCore-eBPF 里，由于OS实现的不同，是先获取当前线程）的独占引用，然后调用`find_free_area`函数找到一个闲置的页，将页的地址返回，作为uprobe ebreak的地址。接着将这个页的信息注册到页表里，最后返回页的地址。
+在实际测试中，我们发现，即使我们将某一用户空间页的页表项设为可写，内核态的 uprobe 代码还是不能写这个页里的地址（甚至无法读），一旦在内核里读/写这个用户地址，os就会报 loadpagefault 然后退出。这是因为，rCore-Tutorial-v3 采用了一种独特的“双页表”设计，即进程和内核使用不同的页表；而在 rCore 中采用的是更普遍的"单页表"设计，即进程和内核共享同一张页表。所以，在 rCore 等"单页表"OS中，内核地址空间中执行的内核代码如果需要读写应用的地址空间中的数据，内核可以直接对用户空间的地址进行访存，因为一个进程及其内核空间只需花费一个页表；而在 rCore-Tutorial-v3 中，这无法简单的通过一次访存来解决，而是需要手动查用户态应用的地址空间的页表，知道用户态应用的虚地址对应的物理地址后，转换成对应的内核态的虚地址，才能访问应用地址空间中的数据。如果访问应用地址空间中的数据跨了多个页，还需要注意处理地址的边界条件。
 
-``` rust
-#[no_mangle]
-pub extern "C" fn get_new_page(addr: usize, len: usize) -> usize{
-    //println!("get_new_page");
-    let binding = crate::task::current_process();
-    // println!("Getting PCB in get_new_page");
-    let mut current_proc = binding.inner_exclusive_access();
-    let ebreak_addr = current_proc.memory_set.find_free_area(addr, len);
-    current_proc.memory_set.push(MapArea::new(ebreak_addr, VirtAddr(ebreak_addr.0+len), Framed, MapPermission::R | MapPermission::W| MapPermission::X| MapPermission::U), None);
-    unsafe {asm!("fence.i");}
-    ebreak_addr.0
-}
-```
+但是，现有的 uprobe 代码在内存读写这一部分写得比较随便，不容易看明白某段代码的最终目的到底是获取数据还是修改数据。因此，我们完整，谨慎地分析代码，判断每一处内存操作是读还是写。对于读操作，创建一个缓冲区，然后调用`os_copy_from_user`向缓冲区内写入数据即可；对于写操作，需要先读取到缓冲区，待uprobe修改了缓冲区的数据后，再利用`os_copy_to_user`将缓冲区内数据写回原处。改写代码时，一定要特别注意原版代码里是否有写操作，防止出现这种情况：对用户内存有修改，但是却只在缓冲区里修改，没有将修改后的数据写回原地址。
 
-可以看到，这个函数体本身是比较简单的，但是它调用的`find_free_area`却不是。在rCore中，`find_free_area`是OS自带的一个函数，只需要调用即可，但是在rCore-Tutorial-v3 里是没有类似功能的函数的，需要我们自己实现。
+此外还有一个问题，这三个函数需要访问PCB里的数据，因此需要获得PCB的独占借用。rCore-Tutorial-v3的PCB是独占借用的，这是因为它要确保线程对可写数据的独占访问时，不会被中断打断或引入可能的线程切换，而避免竞态条件的产生。因此我们需要修改内核代码中不同模块的借用顺序， 从而使得各处代码对于PCB的独占借用不冲突。
 
-`find_free_area`函数的代码实现如下：
-
-```rust
-    /// Find a free area with hint address `addr_hint` and length `len`.
-    /// Return the start address of found free area.
-    /// Used for mmap.
-    pub fn find_free_area(&self, addr_hint: usize, len: usize) -> VirtAddr {
-        // brute force:
-        // try each area's end address as the start
-        super::address::VirtAddr(
-            core::iter::once(addr_hint)//czy is this correct?
-            //.chain(self.areas.iter().map(|area| area.end_addr))//czy we dont have end_addr. what does this line do? what's an alternative solution?
-            //.map(|addr| (addr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)) // round up a page。
-            .chain(self.areas.iter().map(|area|area.vpn_range.get_end().0+PAGE_SIZE))//should we -1?
-            .find(|&addr| self.test_free_area(addr, addr + len))
-            .expect("failed to find free area ???")
-        ) 
-    }
-}
-```
-
-在查阅关于 Rust 函数式编程和链式调用语法的资料后，这段代码的作用也不难理解：用蛮力算法找到一个足够长的连续空闲内存区间。在实现这段代码时，困难的地方在于 rCore-Tutorial-v3 是以页区间为单位管理内存的，而 rCore-eBPF 项目是以地址区间为单位管理内存的（例如，上图中注释掉的两行代码就是来源于rCore-eBPF 项目），所以我们要将以地址区间为单位的内存管理代码转换为以页区间为单位的内存管理代码。
-
-`find_free_area`也调用了一个子程序`test_free_area`（用于测试某个内存区间是否已经被占用），而`test_free_area`又调用了`is_overlap_with`子程序。同样地，这些子程序在 rCore-eBPF 项目中是OS代码提供的现成API，但是在rCore-Tutorial-v3中，需要我们自己实现。
-
-`is_overlap_with`函数功能简单（即测试两个内存区间是否重叠），代码也不长，但是由于文档的缺失（rCore-Tutorial-v3的内存管理是左闭右闭的，而rCore则是左闭右开的，两个OS的文档都没说明确这一点，我们通过自己的实际测试才发现这个问题），加上两个OS的内存管理单位不同（rCore以内存区间为单位，rCore-Tutorial-v3以页区间为单位）这段代码极易出错：
-
-```rust
-    /// Test whether this area is (page) overlap with area [`start_addr`, `end_addr`]
-    pub fn is_overlap_with(&self, start_addr: VirtAddr, end_addr: VirtAddr) -> bool {
-        // original from rCore-ebpf: 
-        // let p0 = Page::of_addr(self.start_addr);
-        // let p1 = Page::of_addr(self.end_addr - 1) + 1;
-        // let p2 = Page::of_addr(start_addr);
-        // let p3 = Page::of_addr(end_addr - 1) + 1;
-        // if OS crashes, here should be the first place to check with.
-        let p0 = self.vpn_range.get_start();
-        let p1 = self.vpn_range.get_end();
-        let p2 =  start_addr.floor();//VirtPageNum::from(start_addr);
-        let p3 = end_addr.ceil();//VirtPageNum::from(end_addr.0+PAGE_SIZE);//Page::of_addr(end_addr - 1) + 1;
-        !(p1 < p2 || p0 > p3)
-    }
-}
-```
-
-在重写这个函数至少五次之后，我终于写出了不出错的版本，且彻底了解了rCore-Tutorial-v3 内存管理API的使用，和这段代码的含义：
-
-在正常情况下，如果两个区间[p0,p1),[p2,p3)不重叠，只有两种情况：
-
-1. `p0-p1, p2-p3`
-2. `p2-p3, p0-p1`
-
-其中，p0 < p1 和 p2 < p3 这两个条件肯定是满足的，因此只需要检查 p1 与 p2 ，p3 与 p0 的关系。
-
-在第一种情况下，p1<=p2 ；在第二种情况下，p3<=p0。如果这两个情况都不出现，那么就是重叠了。
-
-但是，这种推理方式的前提是，给定的区间都是左闭右开的，而rCore-Tutorial-v3的内存区间相关的数据结构都是闭区间（文档里没明说，我根据代码和自己的实验猜测的）。因此，与其将闭区间转换成左闭右开（这是之前多次写错的根本原因），不如直接改写成闭区间的写法（即，在第一种情况下，p1<p2 ；在第二种情况下，p3 < p0。如果这两个情况都不出现，那么就是重叠了），就不会写错了，而且代码简洁不少。
-
-###### 3.2.3.2.2 set_writeable 函数的实现
-
-`set_writeable` 函数的作用是，在`get_new_page` 函数获取到新的页用户空间的页后，需要将这一个页设为可写，从而内核中的 uprobe 模块可以对这个页进行修改。
-
-```rust
-// mm/mod.rs
-
-/// only use this for uprobe
-#[no_mangle]
-pub extern "C" fn set_writeable(addr: usize){
-    //println!("set_writable. addr is {:x}",addr);
-    let binding = crate::task::current_process();
-    // println!("Getting PCB in set_writeable");
-    let current_proc = binding.inner_exclusive_access();
-    current_proc.memory_set.page_table.translate(VirtAddr(addr).floor()).unwrap().set_writable();
-    //println!("setted!");
-    unsafe {asm!("fence.i");}
-}
-
-
-// mm/page_table.rs
-impl PageTableEntry {
-    // ...
-    pub fn set_writable(&mut self){
-        //println!("before: {:x}",self.bits);
-        self.bits |= 0b111;//1<<2 ;
-        //println!("after: {:x}",self.bits);
-    }
-}
-```
-
-如以上代码所示，由于 rCore-Tutorial-v3 没有提供将页设为可写的 API，我们自己利用对页表项的位操作编写了一个。然而，在实际测试中，我们发现，即使我们将某一用户空间页的页表项设为可写，内核态的 uprobe 代码还是不能写这个页里的地址（甚至无法读），一旦在内核里读/写这个用户地址，os就会报 loadpagefault 然后退出。而在 rCore-eBPF 中，用同样的方式修改页表项后，相关地址就可以进行读写了。两个OS虽然实现方式有很大不同，但是运行于相同的体系结构，相同版本的虚拟机，怎么会出现这样的情况？我们推测了很多种导致错误的原因，包括页表操作错误，位操作错误，初始化时机不对，页不可读,未对 loadpagefault 做正确处理等，但是经过我们一一验证之后，发现它们都不是导致错误的原因，排查多日后发现，rCore-Tutorial-v3 采用了一种独特的“双页表”设计，即进程和内核使用不同的页表；而在 rCore 中采用的是更普遍的"单页表"设计，即进程和内核共享同一张页表。所以，在 rCore 等"单页表"OS中，内核地址空间中执行的内核代码如果需要读写应用的地址空间中的数据，内核可以直接对用户空间的地址进行方寸，因为一个进程及其内核空间只需花费一个页表；而在 rCore-Tutorial-v3 中，这无法简单的通过一次访存来解决，而是需要手动查用户态应用的地址空间的页表，知道用户态应用的虚地址对应的物理地址后，转换成对应的内核态的虚地址，才能访问应用地址空间中的数据。如果访问应用地址空间中的数据跨了多个页，还需要注意处理地址的边界条件。
-
-进一步查找资料，我们发现，rCore-Tutorial-v3 的 eBPF 虚拟机作者已经意识到了这个问题，且在他的[文档](https://livingshade.github.io/ebpf-doc/rcore/)中提供了两个工具函数，用于“双页表”下的用户内存读写：
-
-``` rust
-pub fn os_copy_from_user(usr_addr: usize, kern_buf: *mut u8, len: usize) -> i32 {
-    use crate::mm::translated_byte_buffer;
-    use crate::task::current_user_token;
-    let t = translated_byte_buffer(current_user_token(), usr_addr as *const u8, len);    
-    let mut all = vec![];
-    for i in t {
-        all.extend(i.to_vec());
-    }
-    copy(kern_buf, all.as_ptr() as *const u8, len);
-    0
-}
-
-pub fn os_copy_to_user(usr_addr: usize, kern_buf: *const u8, len: usize) -> i32 {
-    use crate::mm::translated_byte_buffer;
-    use crate::task::current_user_token;
-    let dst = translated_byte_buffer(current_user_token(), usr_addr as *const u8, len);
-    let mut ptr = kern_buf;
-    let mut total_len = len as i32;
-    for seg in dst {
-        let cur_len = seg.len();
-        total_len -= cur_len as i32;
-        unsafe {
-            core::ptr::copy_nonoverlapping(ptr, seg.as_mut_ptr(), cur_len);
-            ptr = ptr.add(cur_len);   
-        }
-    }
-    assert_eq!(total_len, 0);
-    0
-}
-
-// You don't need to change this two functions
-pub fn copy(dst: *mut u8, src: *const u8, len: usize) {
-    let from = unsafe { from_raw_parts(src, len) };
-    let to = unsafe { from_raw_parts_mut(dst, len) };
-    to.copy_from_slice(from);
-}
-
-pub fn memcmp(u: *const u8, v: *const u8, len: usize) -> bool {
-    return unsafe {
-        from_raw_parts(u, len) == from_raw_parts(v, len)
-    }
-}
-```
-
-但是，想要用上这两个工具函数`os_copy_from_user`和`os_copy_to_user`，还需要解决最后一件麻烦事：现有的 uprobe 代码在内存读写这一部分写得比较随便，不容易看明白某段代码的最终目的到底是获取数据还是修改数据。因此，我们需要完整，谨慎地分析代码，判断每一处内存操作是读还是写。对于读操作，创建一个缓冲区，然后调用`os_copy_from_user`向缓冲区内写入数据即可；对于写操作，需要先读取到缓冲区，待uprobe修改了缓冲区的数据后，再利用`os_copy_to_user`将缓冲区内数据写回原处。改写代码时，一定要特别注意原版代码里是否有写操作，防止出现这种情况：对用户内存有修改，但是却只在缓冲区里修改，没有将修改后的数据写回原地址。
-
-###### 3.2.3.2.3 get_exec_path 函数的实现
-
-`get_exec_path`函数用于获取PCB中进程名，但是 rCore-Tutorial-v3 中PCB是不保存进程名的，我们需要加上。这个过程大概分为三个部分：
-
-1. OS创建零号进程`initproc`时，在其PCB内添加上进程名"initproc"；
-2. 在`fork()`系统调用中，`fork`出的子进程需要赋予和父进程相同的进程名；
-3. 在`exec()`系统调用的代码中，需要修改当前PCB里存储的进程名，因为`exec()`系统调用不会创造新的进程控制块，而是覆盖当前资源，基于当前PCB来运行新程序。
-
-完成以上三步，PCB里就保存了进程名。之后，`get_exec_path`函数只需要获取到当前进程的PCB的独占借用，即可得到需要的进程名：
-
-```rust
-/// use this for uprobe
-#[no_mangle]
-pub extern "C" fn get_exec_path() -> alloc::string::String{
-    // get path of current thread
-    let my_process = &current_task().unwrap().process;
-    let _ = my_process.upgrade().unwrap();
-    // println!("Getting PCB in src/task/mod.rs get_exec_path()");
-    let ret=my_process.upgrade().unwrap().inner_exclusive_access().path.clone();
-    //println!("get_exec_path succeeded. path = {}", ret);
-    ret
-}
-```
-
-然而获取PCB的独占借用也不是一帆风顺的，具体见下一节。
-
-###### 3.2.3.2.4 解决PCB借用失败的问题
-
-在实现了`get_exec_path` 、`get_new_page` 和`set_writeable`这三个和PCB、页表相关的函数后，引入了 uprobe 模块的内核可以通过编译，但是还不能正常启动。我们发现，在OS准备执行initproc进程，uprobe开始初始化时，uprobe 模块总是 panic 然后内核停止运行。panic输出的报错信息是：
-
-```shell
-[ERROR] [kernel] Panicked at src/sync/up.rs:111 already borrowed: BorrowMutError
-```
-
-由于这个错误信息告知的出错位置是智能指针的代码，而不是智能指针使用者的代码，我们没法找到真正的错误代码的位置。好在，在这种情况下，`println!` 输出宏还是可以正常使用的。通过不断的print尝试，我发现出错的原因是，在OS的fork函数被调用后，fork出来的新进程需要初始化 uprobe，而在初始化 uprobe 的过程中，uprobe 模块通过`get_exec_path`函数读取PCB之前，需要调用`exclusive_access()`方法获取到PCB的独占的引用（即，uprobe模块引用PCB时，没有其他代码也在引用PCB，如果已经有其他代码在引用PCB，就会直接panic退出内核）而PCB在此时已经被其他代码借用了。
-
-对于这个问题，我想到了以下三个解决思路：
-
-1. 考虑到`get_exec_path`获取PCB的独占引用仅仅是为了获取进程名，不会修改PCB，不如将进程名数据复制放到其他允许不独占引用的结构体中。
-2. 修改PCB的定义，换用其他智能指针（比如早期版本的rCore-Tutorial-v3中用的`UPSafeCell`）从而允许PCB同时被多者引用
-3. 修改内核代码中不同模块的借用顺序， 从而使得各处代码对于PCB的独占借用不冲突，好借好还，再接不难。
-
-如果采用思路1，会发现fork之后进程名的更新成为了麻烦，原因是，会导致进程名更新的代码全部都在这个独占引用结构体的方法里，而独占引用结构体里的函数无法“跳出”独占引用容器，主动访问外部信息。
-
-如果采用思路2，会导致其他代码不可用。rCore-Tutorial-v3 的文档里已经明确解释了为什么换用这个“关中断独占容器”是必要的：
-
-> use `UPSafeCell` instead of `RefCell` or `spin::Mutex` in order to access static data structures and adjust its API so that it cannot be borrowed twice at a time(mention `& .exclusive_access().task[0]` in `run_first_task`) -
->
-> -- rCore-Tutorial-v3 Readme
-
-> ...另一方面是提供了 UPIntrFreeCell 接口，代替了之前的 UPSafeCell 。在Device OS 中把 UPSafeCell 改为 UPIntrFreeCell 。这是因为在第九章前，系统设置在S-Mode中屏蔽中断，所以在 S-Mode中运行的内核代码不会被各种外设中断打断，这样在单处理器的前提下，采用 UPSafeCell 来实现对可写数据的独占访问支持是够用的。但在第九章中，系统配置改为在S-Mode中使能中断，所以内核代码在内核执行过程中会被中断打断，无法实现可靠的独占访问。本章引入了新的 UPIntrFreeCell 机制，使得在通过 UPIntrFreeCell 对可写数据进行独占访问前，先屏蔽中断；而对可写数据独占访问结束后，再使能中断。从而确保线程对可写数据的独占访问时，不会被中断打断或引入可能的线程切换，而避免了竞态条件的产生。
->
-> -- rCore-Tutorial-Book-v3
-
-看来我们只能采用思路3来解决这个问题。这是最麻烦的思路，但同时也最有可能根除这个问题。那么，是哪里的代码借用了PCB？
-
-由于`exclusive_access()`函数是分散在代码各处的，光靠阅读代码很难厘清谁先谁后。只能通过添加输出信息，在OS运行的时候输出借用顺序。
-
-但是，输出这些信息也很麻烦。由于这个`UPIntrFreeCell`智能指针使用了泛型包裹了它指向的数据，而且这个泛型不要求带有`Debug Trait`（也就是说，`UPIntFreeCell`指向的数据不一定支持输出打印）从而，Rust的类型检查禁止我们直接print被包裹的数据。而且，这个智能指针也不能获取智能指针使用者的信息，因此，如果想知道是哪里的代码借用了PCB，在`UPIntrFreeCell`智能指针内部添加输出语句是没有用的，我们只能将 rCore-Tutorail-v3 中的所有`UPIntrFreeCell`的`exclusive_access`语句（一共70处。由于内核出错的时候所有uprobe以外的内核模块都加载完毕了，它们都有可能是造成错误的原因）全部加上输出语句，从而找到是谁借用了PCB，然后调整借用时序，让所有代码都能顺利独占借用PCB。（在处理这个bug的时候，本调试工具项目还不成熟。如果用我们的调试器来调试这个项目，完全不需要加那么多的输出语句。这也能看出print调试法的繁琐和局限性，以及一个易用的调试器的重要性）
-
-最后，我们发现，“already borrowed”的就是fork函数本身。具体来说，是fork函数中，uprobe初始化代码借用PCB之前，已经有代码借用过PCB了。“借用失败”和“借用后还没还”的代码都在同一个fork函数里，这种情况是比较好解决的，我们只需要在第一次成功借用后，就从成功借用的PCB中取出我们要的数据，然后uprobes初始化的时候就不需要再借用了，直接用第一次借用时取出的数据即可。
-
-###### 3.2.3.2.5 其他 uprobe 基础设施
-
-最后，我们还要在内核中进行少量的代码修改，比如让eBPF虚拟机识别用户传来的uprobe请求，在中断处理例程中调用uprobe初始化函数，增加一个`uprobe.h`头文件以便编写 eBPF 程序等。最后，用户可以基于终端命令行对内核和用户程序进行eBPF跟踪。流程大致如下：
+在解决了PCB独占借用的问题后，我们还要在内核中进行少量的代码修改，比如让eBPF虚拟机识别用户传来的uprobe请求，在中断处理例程中调用uprobe初始化函数，增加一个`uprobe.h`头文件以便编写 eBPF 程序等。最后，用户可以基于终端命令行对内核和用户程序进行eBPF跟踪。流程大致如下：
 
 1. 用户在GDB中输入要跟踪的地址
    - 如果跟踪用户态程序，还要加上进程名。
@@ -637,126 +407,21 @@ GDB 允许在不修改源代码的情况下支持 python 语言编写的扩展�
 
 ## 4 远程开发环境下的用户界面（集成开发环境）支持与qemu，实际硬件（部分完成）的支持
 
-### 4.1 概述
-
 在各种 OS 开发者、学习者社区中，我们注意到，尝试用 GDB 进行 OS 调试的往往是初学者。因为他们尚处于入门阶段，对于操作系统的各种抽象概念和复杂的代码执行流不熟悉，因此需要通过 GDB 进行操作系统的单步调试，信息收集，来熟悉这些内容。对于初学者来说，学习 OS 的各种机制、策略，读懂错综复杂的 OS 代码，理解OS的编译流程、掌握OS和硬件的交互机制带来的负担已经很大，不应该再在调试器的配置，使用上增加门槛。因此，OS调试工具很有必要提供一个无需命令行操作的，融入现有集成开发环境的友好用户界面。
 
 我们通过插件的形式，为目前最流行的用于编写操作系统（特别是 Rust 操作系统）的开源IDE VSCode 增加了用于 OS 调试的控制菜单、信息栏、通知窗口、按钮，而且这些用户界面的样式、交互模式，信息展示的方式都很贴近原生VSCode，从而降低了工具的学习成本，大大提升了调试体验。
 
 同时，由于OpenVSCode Server，Github Codespace 等基于 VSCode 的远程开发环境的出现，我们的操作系统调试插件可以直接在这些远程开发环境内运行，使用体验和本地的调试环境几乎没有区别。这样，用户只需要有一个浏览器，就可以编写、编译、调试操作系统。
 
-接下来，我们完整地介绍这套基于远程开发环境的操作系统调试器。
+在之前的这篇论文中[1]我们已经详细介绍了这套基于远程开发环境的操作系统调试器。今年我们增加了eBPF相关的功能。主要有：
 
-### 4.2 整体架构设计
+1. 如果用户开启了 eBPF 跟踪功能，相关的eBPF模块（被调试OS里的eBPF Daemon、GDB中的通信模块、在线IDE的用户界面等）会随着GDB的启动而激活，提供更加强大和灵活的动态跟踪调试功能。
 
-我们设计的在线调试系统通过调试者和被调试内核分离的设计来实现 Qemu 虚拟机或真实系统上的操作系统远程调试。内核在服务器上运行，用户在浏览器里发送调试相关的请求，如下图所示。
+2. 如果用户开启了 eBPF 跟踪功能，Qemu中运行的操作系统会启动基于 eBPF 的调试服务器（即 eBPF Daemon）。这个基于 eBPF 的调试服务器会通过其专属的调试用串口连接到GDB上的 eBPF 调试处理模块。
 
-![2.1](./assets/2.1.png)
+3. GDB 与 gdbserver、eBPF Daemon 通过 GDB 远程串行协议 (RSP) [5]进行通信。RSP 是一个通用的、高层级的协议，用于将 GDB 连接到任何远程目标。 只要远程目标的体系结构（例如在本项目中是RISC-V）已经被 GDB 支持，并且远程目标实现了支持 RSP 协议的服务器端，那么 GDB 就能够远程连接到该目标。
 
-图4.1  调试工具的整体架构设计
-
-在图4.1中，源代码指待编译的操作系统的源代码，当用户发出编译请求时，服务器中的 rust 工具链会通过特定的编译参数编译操作系统源代码，产生满足操作系统调试要求的操作系统镜像和调试信息文件。如果用户接下来发出调试请求，服务器中的 Qemu 或服务器连接的 FPGA 硬件就会加载操作系统镜像（本项目以 Qemu 为例），服务器中的 GDB 会加载调试信息文件并连接至 Qemu 的 gdbserver。
-
-图中 Extension Frontend 是运行在用户浏览器中负责操作系统调试相关功能的模块。Debug Adapter 是运行在服务器中的独立进程，负责处理 Extension Frontend 发送来的请求。当 GDB 成功加载调试信息文件并连接至 Qemu的 gdbserver 后，Debug Adapter 进程启动并开始接收 Extension Frontend 发送来的请求。Debug Adapter 会将请求转换为 GDB 指令发送给 GDB。GDB 在执行完 GDB 指令后将 GDB/MI 格式的信息返回给 Debug Adapter。Debug Adapter 解析后将结果返回给 Extension Frontend。
-
-如果用户开启了 eBPF 跟踪功能，相关的eBPF模块（被调试OS里的eBPF Daemon、GDB中的通信模块、在线IDE的用户界面等）会随着GDB的启动而激活，提供更加强大和灵活的动态跟踪调试功能。
-
-Extension Frontend 收到 Debug Adapter 发送来的消息后，会将这些消息转换为界面更新消息，发送给在线IDE上的调试界面（图中 Debug UI）和文本编辑器模块（图中 Text Editor）。同样，Debug UI 和Text Editor 也可以向 Extension Frontend 发送消息，比如断点更新消息。
-
-要完成以上的流程，服务器中需安装 openvscode-server、操作系统调试模块（以VSCode插件的形式提供）、Qemu，包含GDB-python的risc-v工具链、rust 工具链。用户可以手动配置服务器中的安装这些软件，也可以使用我们配置好的包含以上工具的 docker 容器，免去了配置的麻烦。
-
-接下来我们分服务器和网页端两个部分介绍这套远程调试工具。
-
-### 4.3 服务器部分
-
-#### 4.3.1 在线 VSCode 调试环境
-
-OpenVSCode Server 是 VS Code 的一个分支，它在 VSCode 原有的五层架构的基础上增加了服务器层，使其可以提供一个和 VSCode 功能相近的，通过浏览器即可访问的在线IDE。这个在线IDE可以和服务器上的开发环境、调试环境通信。
-
-用户可以在在线 IDE 上编辑项目源代码，同时可以远程连接到服务器上的终端。我们在服务器里配置好了 Qemu 虚拟机和 GDB、Rust 工具链。用户可以自行通过终端命令使用 Qemu、GDB 等工具手动调试自己编写的操作系统，也可以通过在线 IDE 中的操作系统调试模块进行更便利的调试。
-
-如果用户选择用操作系统调试模块进行调试，操作系统调试模块做的第一步是编译内核并获取操作系统镜像文件和调试信息文件。接下来我们以 rCore-Tutorial-v3 [3]操作系统为例，阐述如何获取这两类文件。
-
-#### 4.3.2 Qemu 和 GDB 的启动流程
-
-在编译完成后，服务器上的 Qemu 会加载操作系统镜像，并开启一个 gdbserver。接着，GDB 加载编译时生成的符号信息文件并连接到 Qemu 提供的 gdbserver。如果用户开启了 eBPF 跟踪功能，Qemu中运行的操作系统会启动基于 eBPF 的调试服务器（即 eBPF server）。这个基于 eBPF 的调试服务器会通过其专属的调试用串口连接到GDB上的 eBPF 调试处理模块。
-
-GDB 与 gdbserver、eBPF server 通过 GDB 远程串行协议 (RSP) [5]进行通信。RSP 是一个通用的、高层级的协议，用于将 GDB 连接到任何远程目标。 只要远程目标的体系结构（例如在本项目中是RISC-V）已经被 GDB 支持，并且远程目标实现了支持 RSP 协议的服务器端，那么 GDB 就能够远程连接到该目标。
-
-#### 4.3.3 调试适配器和VSCode、GDB的交互
-
-调试适配器（Debug Adapter）是一个独立的进程，它负责协调在线 IDE 和 GDB。在 GDB 准备就绪后，Debug Adapter 进程会启动，并开始监听在线 IDE 中 Extension Frontend 模块发送来的各种调试请求。
-
-如下图所示，一旦 Debug Adapter 接收到一个请求，它就会将请求（Debug Adapter Requests）转换为符合 GDB/MI 接口规范（GDB/MI 是一个基于行的面向机器的 GDB 文本接口，它专门用于支持将调试器用作大型系统的一个小组件的系统的开发。）的文本并发送给 GDB。GDB 在解析、执行完 Debug Adapter 发来的命令后，返回符合 GDB/MI 规范的文本信息。Debug Adapter 将 GDB 返回的信息解析后，向 Extension Frontend 返回 Debug Adapter Protocol 协议的 Respond 消息。此外，调试过程中发生的特权级切换、断点触发等事件会通过 Debug Adapter Protocol 协议的 Event 消息发送给 Extension Frontend。
-
-![图示  描述已自动生成](./assets/clip_image001-1692099882470-60.png)
-
-图4.2 Debug Adapter 和GDB、Extension Frontend的通信机制
-
-#### 4.3.4 实际硬件的支持（部分完成）
-
-我们已经完成了调试运行在qemu上的操作系统的工作。为了进一步测试调试器的功能，我们尝试将操作系统镜像烧录进真实硬件中，并实现调试功能。硬件方面我们使用的是昉星光2开发板，操作系统选用的是基于rust的操作系统Alien(作者：陈林峰)。
-
-实现思路如下：首先通过cortex-debug或者命令行调试，实现对openocd的调试，然后再通过修改参数将openocd接入陈林峰的alien os的openocd接口 ，最后，将我们的code-debug替换第一步的调试手段。但是由于openocd不直接支持昉星光2这块板子，所以我们需要使用jtag来辅助openocd接入开发板并实现openocd对操作系统的调试功能。
-
-目前已经实现了将Alien烧录进开发板并运行，但是由于时间等原因，暂未实现调试器的适配，这个是我们未来的工作之一。
-
-### 4.4 网页端部分
-
-在用户浏览器上运行的在线 IDE 中，一个被称作 Extension Frontend 的模块负责和和服务器上的 Debug Adapter 通信。它监听Debug Adapter接收和发出的消息并做出反馈，如更新用户界面、根据用户请求发送 Requests、响应 Responses 和 Events等。Extension Frontend会解析接收到的Responds和Events并将需要的信息转发至WebView。如果WebView向Extension Frontend传递了某个消息，Extension Frontend也会将这个消息转换为Requests发送给Debug Adapter（图2.3）。这种传递信息的方式有比较高的自由度。
-
-![fuckms](./assets/fuckms.png)
-
-图4.3 Extension Frontend和其他模块的信息传递链路
-
-不同类型的数据的更新策略是不一样的，具体见下表：
-
-表4.1  不同类型数据的更新策略
-
-|名称|功能|更新策略|
-|:----|:----|:----|
-|寄存器信息|显示寄存器名及寄存器值|触发断点或暂停时更新|
-|内存信息|显示指定位置和长度的内存信息，可增删|触发断点、暂停、用户修改请求的内存信息时更新|
-|断点信息|显示当前设置的断点以及暂未设置的，缓存的其他内存空间下的断点（比如在内核态时某用户程序的断点）|触发断点或暂停时更新|
-
-VSCode在近期的更新中，添加了一些新的API，提供了原生debugger 界面的支持，因此最外层 WebView 与 VSCode 的交互会显得比较冗余。一个更好的方案是使用VSCode的 TreeView 来取代 WebView 的一部分功能，使调试器界面和VSCode原生界面更好地融合，提高用户体验。（图3.4）
-
-![图示  描述已自动生成](./assets/clip_image002-1692100316810-69.png)
-
-图4.4  基于新API的架构
-
-在这个新的架构中，我们通过VSCode 提供的几个重要的原生 request 接口来展示数据。比如 variablesRequest，其功能是在在线IDE窗口左侧的 debugger 标签页中，顶部VARIABLES 标签栏里展示变量的名字与值。每当代码调试因触发断点等原因发生了暂停，在线 IDE 都会自动发送一个 variablesRequest 向 Debug Adapter 请求变量数据。我们添加了一个自定义的 variablesRequest获取到寄存器数据，从而在更贴近原生界面的 TreeView 里展示寄存器数据。（图4.5）
-
-![img](./assets/clip_image002-1692100360191-71.png)
-
-图4.5  通过TreeView展示数据
-
-WebView除了展示数据外，还提供了一些命令按钮。我们利用新API将这些WebView中的命令按钮改为原生按钮，放置到编辑器的上方，和原生界面融为一体，如下图所示：
-
-![img](./assets/clip_image002-1692100400255-73.png)
-
-图4.6  原生样式的命令按钮
-
-其中按钮的功能如下表所示：
-
-表4.2  调试界面按钮的名称及功能
-
-|名称|功能|
-|:----|:----|
-|gotokernel|在用户态设置内核态出入口断点，从用户态重新进入内核态|
-|setKernelInBreakpoints|设置用户态到内核态的边界处的断点|
-|setKernelOutBreakpoints|设置内核态到用户态的边界处断点|
-|removeAllCliBreakpoints|重置按钮。清空编辑器，Debug   Adapter, GDB中所有断点信息|
-|disableCurrentSpaceBreakpoints|令GDB清除当前设置的断点且不更改Debug Adapter中的断点信息|
-|updateAllSpacesBreakpointsInfo|手动更新断点信息表格|
-
-此外我们还支持了VSCode自带的继续、单步等常见的调试功能按钮，如下图所示：
-
-![img](./assets/clip_image002-1692100450042-75.png)
-
-图4.7  调试功能按钮
-
-此外，我们也为 eBPF 调试功能量身打造了一个用户界面，用户只需要用鼠标点击，即可进行串口连接，符号转地址，注册kprobe/uprobe等调试操作：
+4. 我们为 eBPF 调试功能量身打造了一个用户界面，用户只需要用鼠标点击，即可进行串口连接，符号转地址，注册kprobe/uprobe等调试操作：
 
 ![oslab-2023-08-14-15-37-16](./assets/oslab-2023-08-14-15-37-16.png)
 
@@ -837,6 +502,20 @@ WebView除了展示数据外，还提供了一些命令按钮。我们利用新A
 图5.20 出错的代码
 
 这样，结合 eBPF 和 GDB 两种调试手段，我们根据调试器提供的线索快速定位并修复了这个bug。除了这一处代码，在整个Debug的过程中，我们不需要出于调试目的而改动任何其他的源代码。
+
+## 6 展望
+
+### 6.1 实际硬件的支持
+
+我们已经完成了调试运行在qemu上的操作系统的工作。为了进一步测试调试器的功能，我们尝试将操作系统镜像烧录进真实硬件中，并实现调试功能。硬件方面我们使用的是昉星光2开发板，操作系统选用的是基于rust的操作系统Alien(作者：陈林峰)。
+
+实现思路如下：首先通过cortex-debug或者命令行调试，实现对openocd的调试，然后再通过修改参数将openocd接入陈林峰的alien os的openocd接口 ，最后，将我们的code-debug替换第一步的调试手段。但是由于openocd不直接支持昉星光2这块板子，所以我们需要使用jtag来辅助openocd接入开发板并实现openocd对操作系统的调试功能。
+
+目前已经实现了将Alien烧录进开发板并运行，但是由于时间等原因，暂未实现调试器的适配，这个是我们未来的工作之一。
+
+### 6.2 软硬件结合的异常跟踪机制
+
+我们的调试工具目前可以跟踪系统调用（syscall），但是无法有效跟踪异常（exception）。有一种新的解决方案，即通过修改虚拟机和真实硬件（例如作为 RISC-V 的一个扩展）来实现异常和系统调用的直接跟踪，提高调试工具的覆盖率和准确性。一旦发生异常或系统调用，硬件会直接通知外部调试器。外部调试器收到这个通知后，可以进行断点组切换等操作。
 
 ## 致谢
 
