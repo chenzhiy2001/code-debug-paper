@@ -108,6 +108,8 @@ Debug Adapter 接收到 GDB 传来的动态、静态调试信息后，通过辨�
 
 ## 5 Related Work 相关工作
 
+待搜：kprobe uprobe ebpf
+
 ### 内部调试
 
 1. 内核级调试器（kernel-level debuggers）： 内核级调试器集成在操作系统中，可直接访问内核的内部数据结构和函数。这些调试器允许开发人员设置断点、检查内存并逐步执行内核代码。内核级调试器的例子包括 Linux 内核调试器（KGDB）和 Windows 内核调试器（WinDbg）。
@@ -122,7 +124,7 @@ Debug Adapter 接收到 GDB 传来的动态、静态调试信息后，通过辨�
 
 2. 硬件调试器：硬件调试器是通过调试端口（如 JTAG 或 SWD）连接到目标系统（target system）的外部设备。这些调试器可直接访问处理器的寄存器和内存，从而实现底层调试并控制执行流程。硬件调试器通常用于裸机调试（bare-metal debugging），也可与 OpenOCD 等软件调试器结合使用，以获得更全面的调试体验。
 
-3. 仪器框架（Instrumentation frameworks）： 仪器框架可在目标系统中插入调试和剖析代码，而无需直接修改源代码。这些框架通常提供应用程序接口（API），开发人员可利用它们指定代码中的关注点，然后在构建过程中或运行时自动插入仪器代码。Melvin S W, Patt Y N. developed a tool based on microcode modifications to a VAX 8600 which allows a wide variety of operating system measurements to be taken with minimal perturbation and without the need to modify any operating system software. [2]
+3. 仪器框架（Instrumentation frameworks）： Instrumentation of a software system is a technique for inserting extra code into an application to observer its behavior. Melvin S W, Patt Y N. developed a tool based on microcode modifications to a VAX 8600 which allows a wide variety of operating system measurements to be taken with minimal perturbation and without the need to modify any operating system software. [2]
 
 ## 6 Conclusion 结论
 
