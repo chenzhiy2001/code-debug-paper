@@ -1,6 +1,10 @@
 # code-debug-paper
 
-[中文草稿](./cn-draft.md)
+[中文草稿（旧）](./cn-draft.md)
+
+[中文草稿（新）](./cn-draft-2.md)
+
+[大纲](./outline.md)
 
 ## 进度
 
