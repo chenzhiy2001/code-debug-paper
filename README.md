@@ -1,5 +1,7 @@
 # code-debug-paper
 
+[最终稿件 PDF](./基于%20GDB%20的内核与用户空间同步调试.pdf)
+
 [中文草稿（旧）](./cn-draft.md)
 
 [中文草稿（新）](./cn-draft-2.md)
