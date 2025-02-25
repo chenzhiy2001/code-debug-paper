@@ -1,6 +1,10 @@
 # code-debug-paper
 
-[最终稿件 PDF](./基于%20GDB%20的内核与用户空间同步调试.pdf)
+[最终稿件 PDF 7 页版](./pdf-complete-small-diagram/基于%20GDB%20的内核与用户空间同步调试.pdf)
+
+[最终稿件 PDF 7 页版 大插图](./pdf-complete-big-diagram/基于%20GDB%20的内核与用户空间同步调试.pdf)
+
+[最终稿件 PDF 5 页版 大插图](./pdf-5pages/5页版%20-%20基于%20GDB%20的内核与用户空间同步调试.pdf)
 
 [中文草稿（旧）](./cn-draft.md)
 
